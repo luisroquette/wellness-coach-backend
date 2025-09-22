@@ -6,7 +6,7 @@ import openai
 import logging
 
 # Importar sistema de notificações
-from notifications import create_notification_routes, notification_service
+from .notifications import create_notification_routes, notification_service
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
