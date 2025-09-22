@@ -1,17 +1,22 @@
 {
+  "build": {
+    "env": {
+      "PYTHON_VERSION": "3.11.0"
+    }
+  },
   "functions": {
-    "api/index.py": {
-      "runtime": "python3.9"
+    "src/api/index.py": {
+      "runtime": "python3.11"
     }
   },
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "/api/index.py"
+      "dest": "/src/api/index.py"
     },
     {
       "src": "/(.*)",
-      "dest": "/api/index.py"
+      "dest": "/src/api/index.py"
     }
   ]
 }
