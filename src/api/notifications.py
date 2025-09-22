@@ -1,10 +1,8 @@
 import os
 import json
 from flask import Flask, request, jsonify
-from twilio.rest import Client
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
 import logging
+import requests
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -15,29 +13,20 @@ class NotificationService:
         # Configurações Twilio
         self.twilio_account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
         self.twilio_auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
-        self.twilio_phone_number = os.environ.get('TWILIO_PHONE_NUMBER', '+14155238886')  # Sandbox number
+        self.twilio_phone_number = os.environ.get('TWILIO_PHONE_NUMBER', '+14155238886')
         self.whatsapp_sandbox_number = os.environ.get('WHATSAPP_SANDBOX_NUMBER', 'whatsapp:+14155238886')
         
         # Configurações SendGrid
         self.sendgrid_api_key = os.environ.get('SENDGRID_API_KEY')
         self.from_email = os.environ.get('FROM_EMAIL', 'wellness@example.com')
         
-        # Inicializar clientes
-        if self.twilio_account_sid and self.twilio_auth_token:
-            self.twilio_client = Client(self.twilio_account_sid, self.twilio_auth_token)
-        else:
-            self.twilio_client = None
-            logger.warning("Twilio credentials not found")
-            
-        if self.sendgrid_api_key:
-            self.sendgrid_client = SendGridAPIClient(api_key=self.sendgrid_api_key)
-        else:
-            self.sendgrid_client = None
-            logger.warning("SendGrid API key not found")
+        # URLs das APIs
+        self.twilio_messages_url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/Messages.json"
+        self.sendgrid_url = "https://api.sendgrid.com/v3/mail/send"
     
     def send_sms(self, to_phone, message):
-        """Enviar SMS usando Twilio"""
-        if not self.twilio_client:
+        """Enviar SMS usando Twilio API diretamente"""
+        if not self.twilio_account_sid or not self.twilio_auth_token:
             return {"success": False, "error": "Twilio not configured"}
         
         try:
@@ -45,26 +34,37 @@ class NotificationService:
             if not to_phone.startswith('+'):
                 to_phone = '+' + to_phone
             
-            message = self.twilio_client.messages.create(
-                body=message,
-                from_=self.twilio_phone_number,
-                to=to_phone
+            data = {
+                'From': self.twilio_phone_number,
+                'To': to_phone,
+                'Body': message
+            }
+            
+            response = requests.post(
+                self.twilio_messages_url,
+                data=data,
+                auth=(self.twilio_account_sid, self.twilio_auth_token)
             )
             
-            logger.info(f"SMS sent successfully. SID: {message.sid}")
-            return {
-                "success": True, 
-                "message_sid": message.sid,
-                "status": message.status
-            }
+            if response.status_code == 201:
+                result = response.json()
+                logger.info(f"SMS sent successfully. SID: {result.get('sid')}")
+                return {
+                    "success": True, 
+                    "message_sid": result.get('sid'),
+                    "status": result.get('status')
+                }
+            else:
+                logger.error(f"Error sending SMS: {response.text}")
+                return {"success": False, "error": response.text}
             
         except Exception as e:
             logger.error(f"Error sending SMS: {str(e)}")
             return {"success": False, "error": str(e)}
     
     def send_whatsapp(self, to_phone, message):
-        """Enviar mensagem WhatsApp usando Twilio Sandbox"""
-        if not self.twilio_client:
+        """Enviar mensagem WhatsApp usando Twilio API diretamente"""
+        if not self.twilio_account_sid or not self.twilio_auth_token:
             return {"success": False, "error": "Twilio not configured"}
         
         try:
@@ -74,45 +74,83 @@ class NotificationService:
                     to_phone = '+' + to_phone
                 to_phone = 'whatsapp:' + to_phone
             
-            message = self.twilio_client.messages.create(
-                body=message,
-                from_=self.whatsapp_sandbox_number,
-                to=to_phone
+            data = {
+                'From': self.whatsapp_sandbox_number,
+                'To': to_phone,
+                'Body': message
+            }
+            
+            response = requests.post(
+                self.twilio_messages_url,
+                data=data,
+                auth=(self.twilio_account_sid, self.twilio_auth_token)
             )
             
-            logger.info(f"WhatsApp message sent successfully. SID: {message.sid}")
-            return {
-                "success": True, 
-                "message_sid": message.sid,
-                "status": message.status
-            }
+            if response.status_code == 201:
+                result = response.json()
+                logger.info(f"WhatsApp message sent successfully. SID: {result.get('sid')}")
+                return {
+                    "success": True, 
+                    "message_sid": result.get('sid'),
+                    "status": result.get('status')
+                }
+            else:
+                logger.error(f"Error sending WhatsApp: {response.text}")
+                return {"success": False, "error": response.text}
             
         except Exception as e:
             logger.error(f"Error sending WhatsApp: {str(e)}")
             return {"success": False, "error": str(e)}
     
     def send_email(self, to_email, subject, html_content, text_content=None):
-        """Enviar email usando SendGrid"""
-        if not self.sendgrid_client:
+        """Enviar email usando SendGrid API diretamente"""
+        if not self.sendgrid_api_key:
             return {"success": False, "error": "SendGrid not configured"}
         
         try:
-            message = Mail(
-                from_email=self.from_email,
-                to_emails=to_email,
-                subject=subject,
-                html_content=html_content,
-                plain_text_content=text_content or html_content
+            headers = {
+                'Authorization': f'Bearer {self.sendgrid_api_key}',
+                'Content-Type': 'application/json'
+            }
+            
+            data = {
+                "personalizations": [
+                    {
+                        "to": [{"email": to_email}],
+                        "subject": subject
+                    }
+                ],
+                "from": {"email": self.from_email},
+                "content": [
+                    {
+                        "type": "text/html",
+                        "value": html_content
+                    }
+                ]
+            }
+            
+            if text_content:
+                data["content"].append({
+                    "type": "text/plain",
+                    "value": text_content
+                })
+            
+            response = requests.post(
+                self.sendgrid_url,
+                headers=headers,
+                json=data
             )
             
-            response = self.sendgrid_client.send(message)
-            
-            logger.info(f"Email sent successfully. Status: {response.status_code}")
-            return {
-                "success": True,
-                "status_code": response.status_code,
-                "message_id": response.headers.get('X-Message-Id')
-            }
+            if response.status_code == 202:
+                logger.info(f"Email sent successfully. Status: {response.status_code}")
+                return {
+                    "success": True,
+                    "status_code": response.status_code,
+                    "message_id": response.headers.get('X-Message-Id')
+                }
+            else:
+                logger.error(f"Error sending email: {response.text}")
+                return {"success": False, "error": response.text}
             
         except Exception as e:
             logger.error(f"Error sending email: {str(e)}")
@@ -121,11 +159,6 @@ class NotificationService:
     def send_wellness_summary(self, user_data, summary_text, channels=['email']):
         """
         Enviar resumo de wellness para múltiplos canais
-        
-        Args:
-            user_data: dict com informações do usuário (phone, email, name, etc.)
-            summary_text: texto do resumo gerado pela IA
-            channels: lista de canais ['sms', 'whatsapp', 'email']
         """
         results = {}
         
@@ -265,8 +298,8 @@ def create_notification_routes(app):
     def notification_status():
         """Verificar status das configurações de notificação"""
         status = {
-            "twilio_configured": notification_service.twilio_client is not None,
-            "sendgrid_configured": notification_service.sendgrid_client is not None,
+            "twilio_configured": bool(notification_service.twilio_account_sid and notification_service.twilio_auth_token),
+            "sendgrid_configured": bool(notification_service.sendgrid_api_key),
             "available_channels": []
         }
         

@@ -29,7 +29,7 @@ def home():
         "status": "healthy",
         "message": "Wellness Coach API está funcionando!",
         "openai_configured": bool(openai.api_key),
-        "notifications_available": notification_service.twilio_client is not None or notification_service.sendgrid_client is not None
+        "notifications_available": bool(notification_service.twilio_account_sid or notification_service.sendgrid_api_key)
     })
 
 # Define o endpoint da API em /api/generate-summary
@@ -79,10 +79,8 @@ def generate_summary_handler():
         Foque em motivar a pessoa a continuar cuidando da saúde.
         """
 
-        # 4. Chama a API da OpenAI (GPT)
-        client = openai.OpenAI(api_key=openai.api_key)
-        
-        response = client.chat.completions.create(
+        # 4. Chama a API da OpenAI (GPT) - versão 0.28.1
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Você é um coach de wellness experiente e motivacional que ajuda pessoas a melhorar sua saúde e bem-estar."},
@@ -169,10 +167,8 @@ def generate_and_send_summary():
         Foque em motivar a pessoa a continuar cuidando da saúde.
         """
         
-        # Chamar OpenAI API
-        client = openai.OpenAI(api_key=openai.api_key)
-        
-        response = client.chat.completions.create(
+        # Chamar OpenAI API - versão 0.28.1
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Você é um coach de wellness experiente e motivacional que ajuda pessoas a melhorar sua saúde e bem-estar."},
