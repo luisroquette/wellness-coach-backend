@@ -8,10 +8,8 @@ import openai
 app = Flask(__name__)
 CORS(app)  # Permite requisições de qualquer origem
 
-# Configura o cliente da OpenAI a partir de variáveis de ambiente
-# (Mais seguro do que colocar a chave diretamente no código)
-from openai import OpenAI
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Configura a chave da API da OpenAI a partir de variáveis de ambiente
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Define o endpoint da API em /api/generate-summary
 @app.route("/api/generate-summary", methods=['POST'])
@@ -26,7 +24,7 @@ def generate_summary_handler():
         return jsonify({"error": "Nenhum dado recebido"}), 400
 
     # 2. Valida se a chave da API da OpenAI está configurada
-    if not client.api_key:
+    if not openai.api_key:
         return jsonify({"error": "A chave da API da OpenAI não foi configurada no servidor."}), 500
 
     # 3. Monta a instrução (prompt) para a IA - Estilo "Treinador Motivacional"
@@ -47,8 +45,8 @@ def generate_summary_handler():
         """
 
         # 4. Chama a API da OpenAI (GPT)
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Você é um coach de bem-estar e saúde, especialista em interpretar dados e motivar pessoas."},
                 {"role": "user", "content": prompt_text}
@@ -72,3 +70,5 @@ def generate_summary_handler():
 def home():
     return "Servidor do Wellness Coach AI está no ar."
 
+if __name__ == "__main__":
+    app.run(debug=True)
