@@ -48,7 +48,7 @@ def generate_summary_handler():
 
         # 4. Chama a API da OpenAI (GPT)
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "Você é um coach de bem-estar e saúde, especialista em interpretar dados e motivar pessoas."},
                 {"role": "user", "content": prompt_text}
