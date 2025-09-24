@@ -56,7 +56,9 @@ def generate_summary():
         Mantenha o tom encorajador e positivo, com no máximo 150 palavras.
         """
         
-        response = openai.ChatCompletion.create(
+        client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Você é um coach de saúde motivacional que fala português brasileiro."},
@@ -297,7 +299,9 @@ def generate_personalized_analysis():
         Resposta em português brasileiro, máximo 180 palavras, tom motivacional.
         """
         
-        response = openai.ChatCompletion.create(
+        client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Você é um coach de saúde que cria análises altamente personalizadas."},
