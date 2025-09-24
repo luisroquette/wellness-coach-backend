@@ -1,548 +1,365 @@
-# -*- coding: utf-8 -*-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import openai
 import os
 import json
-from datetime import datetime, timezone
-import firebase_admin
-from firebase_admin import credentials, firestore, auth
-from openai import OpenAI
+from datetime import datetime
 
-# Inicializa o Flask App
 app = Flask(__name__)
-CORS(app)  # Permite requisições de qualquer origem
+CORS(app)
 
-# Configura o cliente da OpenAI
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Configurar OpenAI
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
-# Inicializa Firebase Admin SDK
-def initialize_firebase():
-    """Inicializa o Firebase Admin SDK"""
+# Simulação de banco de dados em memória (para desenvolvimento)
+users_db = {}
+analyses_db = {}
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Endpoint de health check"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.1.0",
+        "firebase_enabled": False
+    })
+
+@app.route('/api/generate-summary', methods=['POST'])
+def generate_summary():
+    """Endpoint original que funciona - mantido para compatibilidade"""
     try:
-        # Verifica se já foi inicializado
-        firebase_admin.get_app()
-    except ValueError:
-        # Inicializa com credenciais do ambiente
-        firebase_config = os.environ.get("FIREBASE_CONFIG")
-        if firebase_config:
-            # Parse das credenciais do ambiente
-            cred_dict = json.loads(firebase_config)
-            cred = credentials.Certificate(cred_dict)
-        else:
-            # Fallback para arquivo de credenciais (desenvolvimento)
-            cred = credentials.ApplicationDefault()
+        data = request.json
         
-        firebase_admin.initialize_app(cred)
-
-# Inicializa Firebase
-initialize_firebase()
-db = firestore.client()
-
-# ============================================================================
-# ENDPOINTS DE AUTENTICAÇÃO
-# ============================================================================
-
-@app.route("/api/auth/register", methods=['POST'])
-def register_user():
-    """
-    Registra um novo usuário no Firebase Auth e salva dados no Firestore
-    """
-    try:
-        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
         
-        # Validação dos dados obrigatórios
-        required_fields = ['email', 'password', 'name', 'phone', 'city', 'state', 'country']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({"error": f"Campo obrigatório: {field}"}), 400
+        steps = data.get('steps', 0)
+        calories = data.get('calories', 0)
+        sleep_hours = data.get('sleep_hours', 0)
         
-        # Cria usuário no Firebase Auth
-        user = auth.create_user(
-            email=data['email'],
-            password=data['password'],
-            display_name=data['name']
-        )
+        # Criar prompt personalizado
+        prompt = f"""
+        Você é um coach de saúde e bem-estar especializado em análise de dados de atividade física.
         
-        # Dados do usuário para o Firestore
-        user_data = {
-            'personal_info': {
-                'name': data['name'],
-                'email': data['email'],
-                'phone': data['phone'],
-                'city': data['city'],
-                'state': data['state'],
-                'country': data['country']
-            },
-            'account_info': {
-                'user_id': user.uid,
-                'created_at': datetime.now(timezone.utc),
-                'last_login': datetime.now(timezone.utc),
-                'app_version': '1.1',
-                'onboarding_completed': False
-            },
-            'profile': {
-                'age': None,
-                'profession': None,
-                'work_schedule': None,
-                'sleep_time': None,
-                'exercise_preferences': [],
-                'exercise_frequency': None,
-                'health_goals': [],
-                'lifestyle': None
-            },
-            'preferences': {
-                'notification_times': ['18:00', '21:00'],
-                'communication_style': 'motivational',
-                'notification_enabled': True
-            }
-        }
+        Analise os seguintes dados de saúde de hoje:
+        - Passos: {steps}
+        - Calorias queimadas: {calories}
+        - Horas de sono: {sleep_hours}
         
-        # Salva no Firestore
-        db.collection('users').document(user.uid).set(user_data)
+        Forneça uma análise motivacional e personalizada em português brasileiro, incluindo:
+        1. Avaliação geral do dia
+        2. Pontos positivos
+        3. Áreas para melhoria
+        4. Dica específica para amanhã
         
-        return jsonify({
-            "success": True,
-            "user_id": user.uid,
-            "message": "Usuário registrado com sucesso"
-        }), 201
-        
-    except auth.EmailAlreadyExistsError:
-        return jsonify({"error": "Email já está em uso"}), 409
-    except Exception as e:
-        return jsonify({"error": f"Erro ao registrar usuário: {str(e)}"}), 500
-
-@app.route("/api/auth/verify-token", methods=['POST'])
-def verify_token():
-    """
-    Verifica se o token Firebase é válido e retorna dados do usuário
-    """
-    try:
-        data = request.get_json()
-        id_token = data.get('id_token')
-        
-        if not id_token:
-            return jsonify({"error": "Token não fornecido"}), 400
-        
-        # Verifica o token
-        decoded_token = auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
-        
-        # Busca dados do usuário no Firestore
-        user_doc = db.collection('users').document(user_id).get()
-        
-        if not user_doc.exists:
-            return jsonify({"error": "Usuário não encontrado"}), 404
-        
-        user_data = user_doc.to_dict()
-        
-        # Atualiza último login
-        db.collection('users').document(user_id).update({
-            'account_info.last_login': datetime.now(timezone.utc)
-        })
-        
-        return jsonify({
-            "success": True,
-            "user_id": user_id,
-            "user_data": user_data
-        }), 200
-        
-    except auth.InvalidIdTokenError:
-        return jsonify({"error": "Token inválido"}), 401
-    except Exception as e:
-        return jsonify({"error": f"Erro ao verificar token: {str(e)}"}), 500
-
-@app.route("/api/user/profile", methods=['GET', 'PUT'])
-def user_profile():
-    """
-    GET: Retorna perfil do usuário
-    PUT: Atualiza perfil do usuário
-    """
-    try:
-        # Verifica autenticação
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Token de autorização necessário"}), 401
-        
-        id_token = auth_header.split('Bearer ')[1]
-        decoded_token = auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
-        
-        if request.method == 'GET':
-            # Retorna perfil do usuário
-            user_doc = db.collection('users').document(user_id).get()
-            if not user_doc.exists:
-                return jsonify({"error": "Usuário não encontrado"}), 404
-            
-            return jsonify({
-                "success": True,
-                "user_data": user_doc.to_dict()
-            }), 200
-        
-        elif request.method == 'PUT':
-            # Atualiza perfil do usuário
-            data = request.get_json()
-            
-            # Campos que podem ser atualizados
-            update_data = {}
-            
-            if 'profile' in data:
-                for key, value in data['profile'].items():
-                    update_data[f'profile.{key}'] = value
-            
-            if 'preferences' in data:
-                for key, value in data['preferences'].items():
-                    update_data[f'preferences.{key}'] = value
-            
-            if update_data:
-                db.collection('users').document(user_id).update(update_data)
-            
-            return jsonify({
-                "success": True,
-                "message": "Perfil atualizado com sucesso"
-            }), 200
-            
-    except auth.InvalidIdTokenError:
-        return jsonify({"error": "Token inválido"}), 401
-    except Exception as e:
-        return jsonify({"error": f"Erro ao processar perfil: {str(e)}"}), 500
-
-# ============================================================================
-# ENDPOINTS DE CHAT E ONBOARDING
-# ============================================================================
-
-@app.route("/api/chat/onboarding", methods=['POST'])
-def chat_onboarding():
-    """
-    Processa conversa de onboarding com IA para coletar perfil do usuário
-    """
-    try:
-        # Verifica autenticação
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Token de autorização necessário"}), 401
-        
-        id_token = auth_header.split('Bearer ')[1]
-        decoded_token = auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
-        
-        data = request.get_json()
-        user_message = data.get('message', '')
-        conversation_step = data.get('step', 1)
-        
-        # Busca dados do usuário
-        user_doc = db.collection('users').document(user_id).get()
-        user_data = user_doc.to_dict()
-        user_name = user_data['personal_info']['name']
-        
-        # Prompts para diferentes etapas do onboarding
-        onboarding_prompts = {
-            1: f"""Você é uma coach de wellness chamada Ana. Inicie uma conversa calorosa com {user_name} para conhecê-lo melhor. 
-            Pergunte sobre idade e profissão de forma natural e amigável. Seja empática e motivacional.
-            Mantenha a resposta curta (máximo 2 frases).""",
-            
-            2: f"""Continue a conversa com {user_name}. Agora pergunte sobre a rotina de trabalho e horários. 
-            Seja curiosa sobre como o trabalho afeta o bem-estar dele. 
-            Mantenha a resposta curta e conversacional.""",
-            
-            3: f"""Agora pergunte ao {user_name} sobre exercícios: que tipos gosta, com que frequência pratica, 
-            e quais são seus horários preferidos. Seja encorajadora independente da resposta.
-            Mantenha a resposta curta.""",
-            
-            4: f"""Pergunte ao {user_name} sobre hábitos de sono: que horas costuma dormir, como é a qualidade do sono, 
-            e se tem alguma rotina antes de dormir. Seja compreensiva.
-            Mantenha a resposta curta.""",
-            
-            5: f"""Finalize perguntando ao {user_name} sobre objetivos de saúde e bem-estar. O que ele gostaria de melhorar? 
-            Termine com uma mensagem motivacional sobre a jornada que começarão juntos.
-            Mantenha a resposta curta."""
-        }
-        
-        prompt = onboarding_prompts.get(conversation_step, onboarding_prompts[1])
-        
-        # Chama OpenAI
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.8,
-            max_tokens=150
-        )
-        
-        ai_response = response.choices[0].message.content.strip()
-        
-        # Salva conversa no Firestore
-        conversation_data = {
-            'user_id': user_id,
-            'step': conversation_step,
-            'user_message': user_message,
-            'ai_response': ai_response,
-            'timestamp': datetime.now(timezone.utc)
-        }
-        
-        db.collection('onboarding_conversations').add(conversation_data)
-        
-        return jsonify({
-            "success": True,
-            "ai_response": ai_response,
-            "next_step": conversation_step + 1,
-            "completed": conversation_step >= 5
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": f"Erro no chat de onboarding: {str(e)}"}), 500
-
-@app.route("/api/chat/complete-onboarding", methods=['POST'])
-def complete_onboarding():
-    """
-    Marca onboarding como completo e extrai dados estruturados das conversas
-    """
-    try:
-        # Verifica autenticação
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Token de autorização necessário"}), 401
-        
-        id_token = auth_header.split('Bearer ')[1]
-        decoded_token = auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
-        
-        # Busca todas as conversas de onboarding do usuário
-        conversations = db.collection('onboarding_conversations')\
-                        .where('user_id', '==', user_id)\
-                        .order_by('timestamp')\
-                        .stream()
-        
-        conversation_text = ""
-        for conv in conversations:
-            conv_data = conv.to_dict()
-            conversation_text += f"Usuário: {conv_data['user_message']}\n"
-            conversation_text += f"IA: {conv_data['ai_response']}\n\n"
-        
-        # Extrai dados estruturados da conversa
-        extraction_prompt = f"""
-        Analise a seguinte conversa de onboarding e extraia as informações em formato JSON:
-        
-        {conversation_text}
-        
-        Retorne APENAS um JSON válido com esta estrutura:
-        {{
-            "age": "número ou null",
-            "profession": "profissão ou null",
-            "work_schedule": "horário de trabalho ou null",
-            "sleep_time": "horário de dormir ou null",
-            "exercise_preferences": ["lista de exercícios preferidos"],
-            "exercise_frequency": "frequência de exercício ou null",
-            "health_goals": ["lista de objetivos de saúde"],
-            "lifestyle": "descrição do estilo de vida ou null"
-        }}
+        Mantenha o tom encorajador e positivo, com no máximo 150 palavras.
         """
         
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Você é um extrator de dados. Retorne apenas JSON válido."},
-                {"role": "user", "content": extraction_prompt}
+                {"role": "system", "content": "Você é um coach de saúde motivacional que fala português brasileiro."},
+                {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
-            max_tokens=300
-        )
-        
-        try:
-            extracted_data = json.loads(response.choices[0].message.content.strip())
-        except json.JSONDecodeError:
-            extracted_data = {}
-        
-        # Atualiza perfil do usuário
-        update_data = {
-            'account_info.onboarding_completed': True,
-            'account_info.onboarding_completed_at': datetime.now(timezone.utc)
-        }
-        
-        for key, value in extracted_data.items():
-            if value is not None:
-                update_data[f'profile.{key}'] = value
-        
-        db.collection('users').document(user_id).update(update_data)
-        
-        return jsonify({
-            "success": True,
-            "message": "Onboarding completo!",
-            "extracted_profile": extracted_data
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": f"Erro ao completar onboarding: {str(e)}"}), 500
-
-# ============================================================================
-# ENDPOINTS DE ANÁLISE (EXPANDIDOS)
-# ============================================================================
-
-@app.route("/api/generate-summary", methods=['POST'])
-def generate_summary_handler():
-    """
-    Gera resumo personalizado baseado no perfil do usuário (versão expandida)
-    """
-    try:
-        # Verifica autenticação (opcional para compatibilidade com v1.0)
-        user_id = None
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            try:
-                id_token = auth_header.split('Bearer ')[1]
-                decoded_token = auth.verify_id_token(id_token)
-                user_id = decoded_token['uid']
-            except:
-                pass  # Continua sem autenticação para compatibilidade
-        
-        health_data = request.get_json()
-        if not health_data:
-            return jsonify({"error": "Nenhum dado recebido"}), 400
-        
-        # Busca perfil do usuário se autenticado
-        user_profile = {}
-        if user_id:
-            user_doc = db.collection('users').document(user_id).get()
-            if user_doc.exists:
-                user_data = user_doc.to_dict()
-                user_profile = {
-                    'name': user_data['personal_info']['name'],
-                    'age': user_data['profile'].get('age'),
-                    'profession': user_data['profile'].get('profession'),
-                    'exercise_preferences': user_data['profile'].get('exercise_preferences', []),
-                    'health_goals': user_data['profile'].get('health_goals', []),
-                    'communication_style': user_data['preferences'].get('communication_style', 'motivational')
-                }
-        
-        # Prompt personalizado baseado no perfil
-        if user_profile:
-            prompt_text = f"""
-            Analise os dados de saúde do usuário {user_profile['name']} e gere um resumo personalizado em português do Brasil.
-            
-            **Perfil do Usuário:**
-            - Nome: {user_profile['name']}
-            - Idade: {user_profile.get('age', 'não informada')}
-            - Profissão: {user_profile.get('profession', 'não informada')}
-            - Exercícios preferidos: {', '.join(user_profile.get('exercise_preferences', [])) or 'não informado'}
-            - Objetivos: {', '.join(user_profile.get('health_goals', [])) or 'não informado'}
-            
-            **Dados de Saúde:**
-            {health_data}
-            
-            **Instruções:**
-            - Use o nome do usuário na saudação
-            - Referencie exercícios preferidos quando relevante
-            - Conecte com objetivos pessoais quando possível
-            - Mantenha tom {user_profile.get('communication_style', 'motivacional')}
-            - Seja específico e personalizado
-            - Máximo 200 palavras
-            """
-        else:
-            # Fallback para usuários não autenticados (compatibilidade v1.0)
-            prompt_text = f"""
-            Analise os seguintes dados de saúde de um usuário em formato JSON e gere um resumo curto, motivacional e amigável em português do Brasil.
-
-            **Regras do Resumo:**
-            - Comece com uma saudação positiva e energética.
-            - Celebre as metas atingidas (calorias, tempo de exercício).
-            - Analise a qualidade do sono, destacando pontos positivos como a duração e o tempo em sono profundo.
-            - Se houver uma tendência de queda (como em passos ou distância), aborde de forma gentil, como um desafio ou sugestão para o dia seguinte, sem tom de crítica.
-            - Termine com uma frase de encorajamento.
-            - O tom deve ser de um "Treinador Motivacional", não de um relatório médico.
-
-            **Dados do Usuário:**
-            {health_data}
-            """
-        
-        # Chama OpenAI
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Você é um coach de bem-estar e saúde, especialista em interpretar dados e motivar pessoas."},
-                {"role": "user", "content": prompt_text}
-            ],
-            temperature=0.7,
-            max_tokens=250
+            max_tokens=200,
+            temperature=0.7
         )
         
         summary = response.choices[0].message.content.strip()
         
-        # Salva análise no histórico se usuário autenticado
-        if user_id:
-            analysis_data = {
-                'user_id': user_id,
-                'health_data': health_data,
-                'ai_analysis': summary,
-                'timestamp': datetime.now(timezone.utc),
-                'app_version': '1.1'
-            }
-            db.collection('health_analyses').add(analysis_data)
-        
-        return jsonify({"summary": summary}), 200
+        return jsonify({
+            "summary": summary,
+            "data": {
+                "steps": steps,
+                "calories": calories,
+                "sleep_hours": sleep_hours
+            },
+            "timestamp": datetime.now().isoformat()
+        })
         
     except Exception as e:
-        return jsonify({"error": f"Ocorreu um erro ao gerar o resumo: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/api/user/history", methods=['GET'])
-def get_user_history():
-    """
-    Retorna histórico de análises do usuário
-    """
+@app.route('/api/register', methods=['POST'])
+def register_user():
+    """Registro de usuário (simulado sem Firebase)"""
     try:
-        # Verifica autenticação
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Token de autorização necessário"}), 401
+        data = request.json
         
-        id_token = auth_header.split('Bearer ')[1]
-        decoded_token = auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
+        required_fields = ['email', 'password', 'name', 'phone', 'city', 'state', 'country']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing field: {field}"}), 400
         
-        # Parâmetros de paginação
-        limit = int(request.args.get('limit', 20))
-        offset = int(request.args.get('offset', 0))
+        email = data['email']
         
-        # Busca análises do usuário
-        analyses = db.collection('health_analyses')\
-                    .where('user_id', '==', user_id)\
-                    .order_by('timestamp', direction=firestore.Query.DESCENDING)\
-                    .limit(limit)\
-                    .offset(offset)\
-                    .stream()
+        # Verificar se usuário já existe
+        if email in users_db:
+            return jsonify({"error": "User already exists"}), 409
         
-        history = []
-        for analysis in analyses:
-            analysis_data = analysis.to_dict()
-            history.append({
-                'id': analysis.id,
-                'timestamp': analysis_data['timestamp'],
-                'summary': analysis_data['ai_analysis'],
-                'health_data': analysis_data.get('health_data', {})
-            })
+        # Simular criação de usuário
+        user_id = f"user_{len(users_db) + 1}"
+        users_db[email] = {
+            "id": user_id,
+            "email": email,
+            "name": data['name'],
+            "phone": data['phone'],
+            "city": data['city'],
+            "state": data['state'],
+            "country": data['country'],
+            "created_at": datetime.now().isoformat(),
+            "profile_completed": False
+        }
         
         return jsonify({
-            "success": True,
-            "history": history,
-            "count": len(history)
-        }), 200
+            "message": "User registered successfully",
+            "user_id": user_id,
+            "email": email
+        })
         
     except Exception as e:
-        return jsonify({"error": f"Erro ao buscar histórico: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
-# ============================================================================
-# ROTA PRINCIPAL
-# ============================================================================
+@app.route('/api/login', methods=['POST'])
+def login_user():
+    """Login de usuário (simulado sem Firebase)"""
+    try:
+        data = request.json
+        
+        if 'email' not in data or 'password' not in data:
+            return jsonify({"error": "Email and password required"}), 400
+        
+        email = data['email']
+        
+        # Verificar se usuário existe
+        if email not in users_db:
+            return jsonify({"error": "User not found"}), 404
+        
+        user = users_db[email]
+        
+        # Simular token (em produção seria JWT)
+        token = f"token_{user['id']}_{datetime.now().timestamp()}"
+        
+        return jsonify({
+            "message": "Login successful",
+            "token": token,
+            "user": {
+                "id": user['id'],
+                "email": user['email'],
+                "name": user['name'],
+                "profile_completed": user['profile_completed']
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/")
-def home():
-    return "My Chat Fit API v1.1 - Sistema de Wellness Coaching com IA"
+@app.route('/api/onboarding/start', methods=['POST'])
+def start_onboarding():
+    """Iniciar chat de onboarding"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({"error": "User ID required"}), 400
+        
+        # Primeira pergunta do onboarding
+        welcome_message = """
+        Olá! 👋 Bem-vindo ao My Chat Fit! 
+        
+        Sou sua assistente de saúde e bem-estar. Para personalizar sua experiência, preciso conhecer você melhor.
+        
+        Vamos começar: Qual é sua idade?
+        """
+        
+        return jsonify({
+            "message": welcome_message,
+            "step": 1,
+            "total_steps": 5,
+            "question_type": "age"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/api/health")
-def health_check():
-    """Endpoint para verificar saúde da API"""
+@app.route('/api/onboarding/answer', methods=['POST'])
+def process_onboarding_answer():
+    """Processar resposta do onboarding"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        answer = data.get('answer')
+        step = data.get('step', 1)
+        
+        if not user_id or not answer:
+            return jsonify({"error": "User ID and answer required"}), 400
+        
+        # Definir próximas perguntas baseadas no step
+        questions = {
+            1: {
+                "message": "Perfeito! Agora me conte, qual é sua profissão?",
+                "question_type": "profession",
+                "step": 2
+            },
+            2: {
+                "message": "Interessante! Que tipos de exercícios você pratica ou gostaria de praticar?",
+                "question_type": "exercises",
+                "step": 3
+            },
+            3: {
+                "message": "Ótimo! Como é sua rotina de trabalho? Você trabalha sentado, em pé, ou se movimenta bastante?",
+                "question_type": "work_routine",
+                "step": 4
+            },
+            4: {
+                "message": "Entendi! Por último, a que horas você costuma se deitar para dormir?",
+                "question_type": "sleep_time",
+                "step": 5
+            },
+            5: {
+                "message": """
+                Perfeito! 🎉 
+                
+                Agora tenho todas as informações que preciso para personalizar sua experiência no My Chat Fit!
+                
+                Com base no seu perfil, vou gerar análises personalizadas dos seus dados de saúde e sugerir melhorias específicas para seu estilo de vida.
+                
+                Bem-vindo à sua jornada de saúde e bem-estar! 💪
+                """,
+                "question_type": "completed",
+                "step": "completed"
+            }
+        }
+        
+        if step < 5:
+            next_question = questions.get(step, questions[5])
+            return jsonify({
+                "message": next_question["message"],
+                "step": next_question["step"],
+                "total_steps": 5,
+                "question_type": next_question["question_type"]
+            })
+        else:
+            # Onboarding completo
+            return jsonify({
+                "message": questions[5]["message"],
+                "step": "completed",
+                "total_steps": 5,
+                "question_type": "completed",
+                "onboarding_completed": True
+            })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/analysis/personalized', methods=['POST'])
+def generate_personalized_analysis():
+    """Gerar análise personalizada baseada no perfil do usuário"""
+    try:
+        data = request.json
+        
+        # Dados de saúde
+        steps = data.get('steps', 0)
+        calories = data.get('calories', 0)
+        sleep_hours = data.get('sleep_hours', 0)
+        
+        # Dados do perfil (simulados ou vindos do onboarding)
+        age = data.get('age', 30)
+        profession = data.get('profession', 'profissional')
+        exercises = data.get('exercises', 'exercícios regulares')
+        work_routine = data.get('work_routine', 'trabalho misto')
+        sleep_time = data.get('sleep_time', '22:00')
+        
+        # Criar prompt personalizado
+        prompt = f"""
+        Você é um coach de saúde personalizado. Analise os dados considerando o perfil específico:
+        
+        PERFIL DO USUÁRIO:
+        - Idade: {age} anos
+        - Profissão: {profession}
+        - Exercícios preferidos: {exercises}
+        - Rotina de trabalho: {work_routine}
+        - Horário de dormir: {sleep_time}
+        
+        DADOS DE HOJE:
+        - Passos: {steps}
+        - Calorias: {calories}
+        - Sono: {sleep_hours}h
+        
+        Forneça uma análise PERSONALIZADA considerando:
+        1. Como os dados se relacionam com a profissão e rotina
+        2. Sugestões específicas para os exercícios preferidos
+        3. Ajustes baseados no horário de sono
+        4. Motivação personalizada para o perfil
+        
+        Resposta em português brasileiro, máximo 180 palavras, tom motivacional.
+        """
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Você é um coach de saúde que cria análises altamente personalizadas."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=250,
+            temperature=0.7
+        )
+        
+        analysis = response.choices[0].message.content.strip()
+        
+        return jsonify({
+            "analysis": analysis,
+            "personalized": True,
+            "profile_used": {
+                "age": age,
+                "profession": profession,
+                "exercises": exercises,
+                "work_routine": work_routine,
+                "sleep_time": sleep_time
+            },
+            "health_data": {
+                "steps": steps,
+                "calories": calories,
+                "sleep_hours": sleep_hours
+            },
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/user/profile', methods=['GET'])
+def get_user_profile():
+    """Obter perfil do usuário"""
+    try:
+        # Simular busca de perfil
+        return jsonify({
+            "message": "Profile endpoint ready",
+            "note": "Firebase integration pending"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Endpoint raiz para teste
+@app.route('/', methods=['GET'])
+def root():
     return jsonify({
-        "status": "healthy",
-        "version": "1.1",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }), 200
+        "message": "My Chat Fit API v1.1",
+        "status": "running",
+        "endpoints": [
+            "/api/health",
+            "/api/generate-summary",
+            "/api/register",
+            "/api/login", 
+            "/api/onboarding/start",
+            "/api/onboarding/answer",
+            "/api/analysis/personalized",
+            "/api/user/profile"
+        ]
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True)
