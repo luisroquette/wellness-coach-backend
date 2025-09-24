@@ -4,3 +4,5 @@ openai>=1.0.0
 twilio==8.5.0
 sendgrid==6.9.7
 requests==2.31.0
+firebase-admin==6.2.0
+google-cloud-firestore==2.11.1
